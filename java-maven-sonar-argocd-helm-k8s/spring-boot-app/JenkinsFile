@@ -15,6 +15,7 @@ pipeline {
   }
 
   stages {
+
     stage('Prep agent (docker + git-safe)') {
       steps {
         sh '''
@@ -35,7 +36,8 @@ pipeline {
       steps {
         checkout([$class: 'GitSCM',
           branches: [[name: '*/main']],
-          userRemoteConfigs: [[url: 'https://github.com/GauravBhardwaj10/Jenkins-Zero-To-Hero']]
+          userRemoteConfigs: [[url: 'https://github.com/GauravBhardwaj10/Jenkins-Zero-To-Hero']],
+          extensions: [[$class: 'LocalBranch', localBranch: 'main']]   // <-- check out a real local branch
         ])
         sh 'echo "Commit: ${GIT_COMMIT}" && echo "$GIT_COMMIT" | cut -c1-7'
       }
@@ -89,17 +91,24 @@ pipeline {
             git config user.email "gauravs10sharma@gmail.com"
             git config user.name  "GauravBhardwaj10"
 
-            # Make sure we have the latest before committing (avoids non-fast-forward)
-            git pull --rebase || true
+            # Ensure local main is up-to-date and not detached
+            git fetch origin main
+            if git show-ref --verify --quiet refs/heads/main; then
+              git checkout main
+            else
+              git checkout -b main
+            fi
+            git reset --hard origin/main
 
+            # Bump image tag in manifest
             sed -i "s|replaceImageTag|$IMAGE_TAG|g" \
               java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
 
             git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
             git commit -m "Update deployment image to version $IMAGE_TAG" || echo "No changes to commit"
 
-            # Push using username in URL + token as password
-            git push "https://GauravBhardwaj10:${GITHUB_TOKEN}@github.com/GauravBhardwaj10/Jenkins-Zero-To-Hero.git" HEAD:main
+            # Push using username + token
+            git push "https://GauravBhardwaj10:${GITHUB_TOKEN}@github.com/GauravBhardwaj10/Jenkins-Zero-To-Hero.git" main
           '''
         }
       }
