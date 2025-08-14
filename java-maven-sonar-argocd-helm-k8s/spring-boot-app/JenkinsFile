@@ -1,37 +1,32 @@
 pipeline {
   agent {
     docker {
-      // Build agent with Java+Maven; we'll add docker-cli in a prep step
       image 'maven:3.9.6-eclipse-temurin-17'
-      // Run as root and mount host docker socket
       args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
       reuseNode true
     }
   }
 
   environment {
-    // Docker Hub repo you actually own
     DOCKER_REPO = 'gauravbhardwaj10/user-service'
     IMAGE_TAG   = "${BUILD_NUMBER}"
-
-    // SonarQube
-    SONAR_URL = 'http://3.232.133.57:9000'  // adjust if different
-    // project path inside the repo
-    APP_DIR = 'java-maven-sonar-argocd-helm-k8s/spring-boot-app'
+    SONAR_URL   = 'http://3.232.133.57:9000'
+    APP_DIR     = 'java-maven-sonar-argocd-helm-k8s/spring-boot-app'
   }
 
   stages {
-
-    stage('Prep agent (install docker CLI)') {
+    stage('Prep agent (docker + git-safe)') {
       steps {
         sh '''
           set -e
+          # docker CLI if missing (container)
           if ! command -v docker >/dev/null 2>&1; then
-            echo "Installing docker-cli in the build container..."
-            apt-get update -y
-            apt-get install -y --no-install-recommends docker.io ca-certificates
+            apt-get update -y && apt-get install -y --no-install-recommends docker.io ca-certificates
           fi
-          docker version || true
+          # fix git "dubious ownership"
+          git config --global --add safe.directory "$WORKSPACE" || true
+          # optional: cover tmp subdir and any other workspaces
+          git config --global --add safe.directory "$WORKSPACE@tmp" || true
         '''
       }
     }
@@ -42,7 +37,8 @@ pipeline {
           branches: [[name: '*/main']],
           userRemoteConfigs: [[url: 'https://github.com/GauravBhardwaj10/Jenkins-Zero-To-Hero']]
         ])
-        sh 'git rev-parse --short HEAD'
+        // Avoid calling git directly; use env var from the checkout if you only need the short SHA:
+        sh 'echo "Commit: ${GIT_COMMIT}" && echo "$GIT_COMMIT" | cut -c1-7'
       }
     }
 
@@ -50,7 +46,6 @@ pipeline {
       steps {
         sh '''
           set -e
-          ls -la
           cd "$APP_DIR"
           mvn -B -U clean package
         '''
@@ -58,10 +53,7 @@ pipeline {
     }
 
     stage('Static Code Analysis (SonarQube)') {
-      environment {
-        // expects a Jenkins secret text credential with ID 'sonarqube'
-        SONAR_AUTH_TOKEN = credentials('sonarqube')
-      }
+      environment { SONAR_AUTH_TOKEN = credentials('sonarqube') }
       steps {
         sh '''
           set -e
@@ -74,22 +66,14 @@ pipeline {
     }
 
     stage('Build & Push Docker Image') {
-      environment {
-        REGISTRY_CREDENTIALS = credentials('docker-cred')  // Docker Hub creds
-      }
+      environment { REGISTRY_CREDENTIALS = credentials('docker-cred') }
       steps {
         sh '''
           set -e
           cd "$APP_DIR"
-
-          # Build
           docker build -t "$DOCKER_REPO:$IMAGE_TAG" .
-
-          # Login & push
           echo "$REGISTRY_CREDENTIALS_PSW" | docker login -u "$REGISTRY_CREDENTIALS_USR" --password-stdin
           docker push "$DOCKER_REPO:$IMAGE_TAG"
-
-          # (optionally) tag 'latest'
           docker tag "$DOCKER_REPO:$IMAGE_TAG" "$DOCKER_REPO:latest"
           docker push "$DOCKER_REPO:latest"
         '''
@@ -101,7 +85,7 @@ pipeline {
         GIT_REPO_NAME = 'Jenkins-Zero-To-Hero'
         GIT_USER_NAME = 'GauravBhardwaj10'
         GIT_USER_EMAIL = 'gauravs10sharma@gmail.com'
-        GITHUB_TOKEN = credentials('github')   // personal access token
+        GITHUB_TOKEN = credentials('github')
       }
       steps {
         sh '''
