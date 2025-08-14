@@ -19,13 +19,13 @@ pipeline {
       steps {
         sh '''
           set -e
-          # docker CLI if missing (container)
+          # Install docker CLI inside the build container if missing
           if ! command -v docker >/dev/null 2>&1; then
-            apt-get update -y && apt-get install -y --no-install-recommends docker.io ca-certificates
+            apt-get update -y
+            apt-get install -y --no-install-recommends docker.io ca-certificates
           fi
-          # fix git "dubious ownership"
+          # Fix git "dubious ownership" for Jenkins workspace
           git config --global --add safe.directory "$WORKSPACE" || true
-          # optional: cover tmp subdir and any other workspaces
           git config --global --add safe.directory "$WORKSPACE@tmp" || true
         '''
       }
@@ -37,7 +37,6 @@ pipeline {
           branches: [[name: '*/main']],
           userRemoteConfigs: [[url: 'https://github.com/GauravBhardwaj10/Jenkins-Zero-To-Hero']]
         ])
-        // Avoid calling git directly; use env var from the checkout if you only need the short SHA:
         sh 'echo "Commit: ${GIT_COMMIT}" && echo "$GIT_COMMIT" | cut -c1-7'
       }
     }
@@ -53,7 +52,7 @@ pipeline {
     }
 
     stage('Static Code Analysis (SonarQube)') {
-      environment { SONAR_AUTH_TOKEN = credentials('sonarqube') }
+      environment { SONAR_AUTH_TOKEN = credentials('sonarqube') }  // Secret text token
       steps {
         sh '''
           set -e
@@ -66,40 +65,38 @@ pipeline {
     }
 
     stage('Build & Push Docker Image') {
-      environment { REGISTRY_CREDENTIALS = credentials('docker-cred') }
       steps {
-        sh '''
-          set -e
-          cd "$APP_DIR"
-          docker build -t "$DOCKER_REPO:$IMAGE_TAG" .
-          echo "$REGISTRY_CREDENTIALS_PSW" | docker login -u "$REGISTRY_CREDENTIALS_USR" --password-stdin
-          docker push "$DOCKER_REPO:$IMAGE_TAG"
-          docker tag "$DOCKER_REPO:$IMAGE_TAG" "$DOCKER_REPO:latest"
-          docker push "$DOCKER_REPO:latest"
-        '''
+        withCredentials([usernamePassword(credentialsId: 'docker-cred', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          sh '''
+            set -e
+            cd "$APP_DIR"
+            docker build -t "$DOCKER_REPO:$IMAGE_TAG" .
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+            docker push "$DOCKER_REPO:$IMAGE_TAG"
+            docker tag "$DOCKER_REPO:$IMAGE_TAG" "$DOCKER_REPO:latest"
+            docker push "$DOCKER_REPO:latest"
+          '''
+        }
       }
     }
 
     stage('Update Deployment File & Push to Git') {
-      environment {
-        GIT_REPO_NAME = 'Jenkins-Zero-To-Hero'
-        GIT_USER_NAME = 'GauravBhardwaj10'
-        GIT_USER_EMAIL = 'gauravs10sharma@gmail.com'
-        GITHUB_TOKEN = credentials('github')
-      }
       steps {
-        sh '''
-          set -e
-          git config user.email "$GIT_USER_EMAIL"
-          git config user.name  "$GIT_USER_NAME"
+        withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
+          sh '''
+            set -e
+            git config user.email "gauravs10sharma@gmail.com"
+            git config user.name  "GauravBhardwaj10"
 
-          sed -i "s|replaceImageTag|$IMAGE_TAG|g" \
-            java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+            sed -i "s|replaceImageTag|$IMAGE_TAG|g" \
+              java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
 
-          git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
-          git commit -m "Update deployment image to version $IMAGE_TAG" || echo "No changes to commit"
-          git push "https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}" HEAD:main
-        '''
+            git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+            git commit -m "Update deployment image to version $IMAGE_TAG" || echo "No changes to commit"
+
+            git push "https://${GIT_USER}:${GIT_TOKEN}@github.com/GauravBhardwaj10/Jenkins-Zero-To-Hero.git" HEAD:main
+          '''
+        }
       }
     }
   }
